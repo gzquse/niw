@@ -1,27 +1,21 @@
-# EB2-NIW Petition Case Comparator 🚀
+# EB2-NIW Case Comparator
 
 This Python script reads USCIS AAO decision PDFs, extracts the main reasons for denial (for the 3 NIW prongs), and **compares** each case **side-by-side** with your own EB2-NIW petition strengths.
 
 You can automatically **compare your case against 7,800+ real AAO decisions**!
 
----
+## Example
 
-## 📦 Features
 
-- Scrape USCIS AAO PDF decision documents
-- Use OpenAI GPT-4o model to summarize NIW prong failure reasons
-- Compare each decision to your own petition
-- Batch processing for thousands of PDFs
-- Clean CSV file output for easy review
-
----
-
-## ⚙️ Installation
-
-```bash
-git clone https://github.com/JP2670/eb2NIW.git
+the code was adapted through https://github.com/JP2670/eb2NIW.git
+```
+export OPENAI_API_KEY=''
 cd eb2NIW
+conda create -n niw python=3.11
+conda activate niw
 pip install -r requirements.txt
+
+python process_eb2niw_prongs_compare.py
 ```
 
 ---

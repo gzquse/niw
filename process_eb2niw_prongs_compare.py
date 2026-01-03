@@ -1,35 +1,38 @@
 # === process_eb2niw_prongs_compare.py ===
 
-import openai
 import requests
 import fitz  # PyMuPDF
 import csv
 import time
+import re
+from openai import OpenAI
 
 # ---------------
 # SETTINGS
 # ---------------
-openai.api_key = "YOUR_NEW_OPENAI_API_KEY_HERE"
 model_name = "gpt-4o"
 batch_size = 50
 sleep_time = 10
-start_line = 1  # <-- Change here: starting line number (1-indexed)
-end_line = 7700  # <-- Change here: ending line number (inclusive), I would first run a trial with 10 cases.
-#7700 cases will take some time, start with a smaller number initially.
+start_line = 1  # Starting line number (1-indexed)
+end_line = 100  # Ending line number (inclusive)
 
-# Your petition details hardcoded
+# Your petition details
 my_case = {
-    "Prong1": "Strong: working on cutting-edge technology aligned with U.S. innovation goals.",
-    "Prong2": "5+ years professional experience in major U.S. organizations, demonstrated leadership roles.",
-    "Prong3": "Immediate contribution to national innovation efforts; delay would harm competitiveness."
+    "Prong1": "Strong: Research directly improves U.S. healthcare outcomes using AI for early disease detection.",
+    "Prong2": "4+ years leading projects at a top U.S. university hospital and multiple published papers.",
+    "Prong3": "Immediate healthcare application; delay would risk public health improvements."
 }
 
 
 # ---------------
 # READ PDF LINKS
 # ---------------
-with open("Master_file", "r") as file:
-    all_links = [line.strip() for line in file if line.strip()]
+try:
+    with open("Master_file", "r") as file:
+        all_links = [line.strip() for line in file if line.strip()]
+except FileNotFoundError:
+    print("Error: 'Master_file' not found. Please ensure the file exists.")
+    all_links = []
 
 pdf_links = all_links[start_line - 1:end_line]
 
@@ -55,50 +58,50 @@ def extract_text_from_url(url):
         print(f"Error fetching PDF from {url}: {e}")
         return ""
 
-def analyze_niw_case(text):
+def analyze_niw_case_and_compare(text, my_case_data):
+    client = OpenAI()
     prompt = f"""
 You are an immigration expert.
-The following text is a USCIS decision document.
+I will provide my case details and a USCIS decision document (Decision).
 
-First:
-- Determine if this case is an EB-2 NIw petition. Answer Yes or No.
+MY CASE:
+Prong 1: {my_case_data['Prong1']}
+Prong 2: {my_case_data['Prong2']}
+Prong 3: {my_case_data['Prong3']}
 
-If Yes, then:
-- Summarize issues for each NIW prong if rejection happened:
-  1. Prong 1 (Substantial Merit and National Importance)
-  2. Prong 2 (Well Positioned to Advance Endeavor)
-  3. Prong 3 (Benefit to U.S. and PERM Waiver justified)
-- Write short 1-2 sentences for each prong explaining the failure reason.
-
-If No, just say: "Not an NIW case."
-
-Document Text:
+DECISION DOCUMENT:
 {text[:12000]}
+
+TASK:
+1. Determine if the Decision is an EB-2 NIW petition. Answer "NIW: Yes" or "NIW: No".
+2. If Yes, compare MY CASE to the standards and reasoning applied in the Decision.
+   - For each prong, analyze if my profile would satisfy the adjudicator's specific logic/standard in this case.
+   - Assess if I am stronger, weaker, or similar to the petitioner in the decision (or the standard applied).
+3. Provide a "Qualification Percentage" (0-100%) estimating my chance of approval if judged by THIS specific adjudicator/standard.
+
+OUTPUT FORMAT (Strictly follow):
+NIW: [Yes/No]
+Prong 1 Analysis: [Comparison text]
+Prong 2 Analysis: [Comparison text]
+Prong 3 Analysis: [Comparison text]
+Qualification Percentage: [Number]%
+Final Verdict: [One sentence summary]
 """
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model=model_name,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
-            max_tokens=1200,
+            max_tokens=1500,
         )
-        summary = response['choices'][0]['message']['content']
+        summary = response.choices[0].message.content
         return summary
     except Exception as e:
         print(f"Error during API call: {e}")
         return "Error"
-
-def compare_prongs(prong_reason, my_case_reason):
-    prong_reason_lower = prong_reason.lower()
-    if any(x in prong_reason_lower for x in ["weak", "missing", "lack", "no"]):
-        return "Your case stronger"
-    elif "strong" in prong_reason_lower or "good" in prong_reason_lower:
-        return "Mixed"
-    else:
-        return "Mixed"
 
 # ---------------
 # PROCESS PDFs
@@ -106,53 +109,84 @@ def compare_prongs(prong_reason, my_case_reason):
 
 output_rows = []
 
+print(f"Starting processing of {len(pdf_links)} links...")
+
 for idx, link in enumerate(pdf_links):
-    print(f"Processing {start_line + idx}/{end_line}: {link}")
+    print(f"Processing {start_line + idx}/{len(all_links)}: {link}")
     text = extract_text_from_url(link)
     if not text:
         continue
 
-    summary = analyze_niw_case(text)
+    summary = analyze_niw_case_and_compare(text, my_case)
 
-    if "Not an NIW case" in summary:
-        output_rows.append([link, "Not NIW", "Not NIW", "Not NIW", "-", "-", "-", "Not NIW"])
-    else:
+    if summary == "Error":
+        continue
+
+    # Parse the response
+    is_niw = False
+    if "NIW: Yes" in summary:
+        is_niw = True
+    elif "NIW: No" in summary:
+        # Skip non-NIW cases as requested
+        print("  -> Not an NIW case. Skipping.")
+        continue
+    
+    # Fallback check if "NIW: Yes" wasn't explicit but context implies it
+    # But strictly following instructions, we skip if not explicit Yes or if it says No.
+
+    if is_niw:
         try:
-            prong1 = prong2 = prong3 = ""
+            p1_analysis = ""
+            p2_analysis = ""
+            p3_analysis = ""
+            qual_percent = ""
+            final_verdict = ""
+
             lines = summary.split('\n')
-            for line in lines:
-                if "Prong 1" in line:
-                    prong1 = line.split(":",1)[-1].strip()
-                if "Prong 2" in line:
-                    prong2 = line.split(":",1)[-1].strip()
-                if "Prong 3" in line:
-                    prong3 = line.split(":",1)[-1].strip()
+            current_section = None
+            
+            # Simple line-based parsing assuming format is followed
+            # Using regex or simpler find logic might be more robust for multiline values
+            
+            # Helper to extract value after label
+            def extract_val(marker, text_block):
+                pattern = re.compile(rf"{marker}\s*(.*)", re.IGNORECASE)
+                match = pattern.search(text_block)
+                return match.group(1).strip() if match else ""
 
-            prong1_verdict = compare_prongs(prong1, my_case['Prong1'])
-            prong2_verdict = compare_prongs(prong2, my_case['Prong2'])
-            prong3_verdict = compare_prongs(prong3, my_case['Prong3'])
+            # Let's try to parse the whole block with regex for better multiline support if needed
+            # But line iteration is often safer for streaming tokens if format varies slightly.
+            # Given the format instruction, let's try to extract sections.
+            
+            p1_match = re.search(r"Prong 1 Analysis:\s*(.*?)(?=Prong 2 Analysis:|$)", summary, re.DOTALL | re.IGNORECASE)
+            p1_analysis = p1_match.group(1).strip() if p1_match else "Parse Error"
 
-            # Determine overall verdict
-            if prong1_verdict == prong2_verdict == prong3_verdict == "Your case stronger":
-                final_verdict = "Your case much stronger"
-            elif "Your case stronger" in [prong1_verdict, prong2_verdict, prong3_verdict]:
-                final_verdict = "Your case slightly stronger"
-            else:
-                final_verdict = "Mixed or equal"
+            p2_match = re.search(r"Prong 2 Analysis:\s*(.*?)(?=Prong 3 Analysis:|$)", summary, re.DOTALL | re.IGNORECASE)
+            p2_analysis = p2_match.group(1).strip() if p2_match else "Parse Error"
 
-            output_rows.append([link, prong1, prong2, prong3, prong1_verdict, prong2_verdict, prong3_verdict, final_verdict])
+            p3_match = re.search(r"Prong 3 Analysis:\s*(.*?)(?=Qualification Percentage:|$)", summary, re.DOTALL | re.IGNORECASE)
+            p3_analysis = p3_match.group(1).strip() if p3_match else "Parse Error"
+
+            qual_match = re.search(r"Qualification Percentage:\s*(\d+%?)", summary, re.IGNORECASE)
+            qual_percent = qual_match.group(1).strip() if qual_match else "N/A"
+
+            verdict_match = re.search(r"Final Verdict:\s*(.*)", summary, re.IGNORECASE)
+            final_verdict = verdict_match.group(1).strip() if verdict_match else "N/A"
+
+            print(f"  -> NIW Case. Qualification: {qual_percent}")
+            output_rows.append([link, p1_analysis, p2_analysis, p3_analysis, qual_percent, final_verdict])
 
         except Exception as e:
-            print(f"Error parsing prongs: {e}")
-            output_rows.append([link, "Parse Error", "Parse Error", "Parse Error", "-", "-", "-", "Parse Error"])
+            print(f"Error parsing summary: {e}")
+            output_rows.append([link, "Parse Error", "Parse Error", "Parse Error", "Parse Error", "Parse Error"])
 
     if (idx + 1) % batch_size == 0 or (idx + 1) == len(pdf_links):
         print("Saving progress...")
         with open("summary_prongs_comparison.csv", "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["PDF Link", "Prong 1 Reason", "Prong 2 Reason", "Prong 3 Reason", "Prong 1 Verdict", "Prong 2 Verdict", "Prong 3 Verdict", "Final Verdict"])
+            writer.writerow(["PDF Link", "Prong 1 Comparison", "Prong 2 Comparison", "Prong 3 Comparison", "Qualification Percentage", "Final Verdict"])
             writer.writerows(output_rows)
-        print(f"Saved {len(output_rows)} rows so far.")
+        print(f"Saved {len(output_rows)} NIW rows so far.")
         time.sleep(sleep_time)
 
-print("Done! All selected NIW prong comparisons saved to summary_prongs_comparison.csv")
+print("Done! All NIW comparisons saved to summary_prongs_comparison.csv")
